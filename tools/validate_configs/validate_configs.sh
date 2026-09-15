@@ -17,6 +17,39 @@ set -e -o pipefail
 
 export GHPC_MOCK_MACHINE_CONFIG='{"gpus": {}, "tpus": {}, "cpus": {}}'
 export GHPC_SKIP_BUCKET_CREATION="true"
+export TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-/tmp/cluster-toolkit-tf-cache}"
+mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+export TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE="true"
+# known Terraform limitation where packages installed from a shared cache trigger checksum
+# mismatch errors against dynamically generated .terraform.lock.hcl files
+
+prewarm_cache() {
+	echo "Pre-warming Terraform plugin cache in ${TF_PLUGIN_CACHE_DIR}..."
+	local tmpdir
+	tmpdir="$(mktemp -d)"
+	cat <<'EOF' >"${tmpdir}/main.tf"
+terraform {
+  required_providers {
+    google      = { source = "hashicorp/google" }
+    google-beta = { source = "hashicorp/google-beta" }
+    null        = { source = "hashicorp/null" }
+    random      = { source = "hashicorp/random" }
+    local       = { source = "hashicorp/local" }
+    time        = { source = "hashicorp/time" }
+    archive     = { source = "hashicorp/archive" }
+    kubernetes  = { source = "hashicorp/kubernetes" }
+    helm        = { source = "hashicorp/helm" }
+    kubectl     = { source = "gavinbunney/kubectl" }
+    http        = { source = "hashicorp/http" }
+    template    = { source = "hashicorp/template" }
+    external    = { source = "hashicorp/external" }
+  }
+}
+EOF
+	(cd "${tmpdir}" && terraform init -no-color -backend=false >/dev/null)
+	rm -rf "${tmpdir}"
+	echo "Terraform plugin cache pre-warmed."
+}
 
 run_test() {
 	example=$1
@@ -66,6 +99,9 @@ run_test() {
 		exit 1
 	}
 	for folder in */; do
+		if [ "${folder}" = "_modules/" ]; then
+			continue
+		fi
 		cd "$folder"
 		pkrdirs=()
 		while IFS= read -r -d $'\n'; do
@@ -143,6 +179,7 @@ EXCLUDE_EXAMPLE["community/examples/hpc-slurm-google-cloud-dedicated/hpc-slurm-g
 
 cwd=$(pwd)
 NPROCS=${NPROCS:-$(nproc)}
+prewarm_cache
 echo "Running tests in $NPROCS processes"
 pids=()
 for example in $CONFIGS; do
